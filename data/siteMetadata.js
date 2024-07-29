@@ -6,7 +6,7 @@ const siteMetadata = {
   description: 'Hyyena Tech Blog',
   language: 'ko',
   theme: 'system', // system, dark or light
-  siteUrl: 'https://tech-hyyena.vercel.app',
+  siteUrl: 'https://tech.hyyena.dev',
   siteRepo: 'https://github.com/Hyyena/tech-blog',
   siteLogo: '/static/images/logo.png',
   socialBanner: '/static/images/twitter-card.png',
@@ -34,7 +34,7 @@ const siteMetadata = {
     },
     // plausibleAnalytics: {
     //   plausibleDataDomain: '', // e.g. tailwind-nextjs-starter-blog.vercel.app
-         // If you are hosting your own Plausible.
+    // If you are hosting your own Plausible.
     //   src: '', // e.g. https://plausible.my-domain.com/js/script.js
     // },
     // simpleAnalytics: {},
