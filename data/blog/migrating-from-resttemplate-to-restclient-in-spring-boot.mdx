@@ -1,7 +1,7 @@
 ---
 title: 'RestClient 맛보기'
 date: '2024-07-31'
-lastmod: '2024-07-31'
+lastmod: '2024-08-01'
 tags: ['Java', 'Spring', 'Spring Boot', 'Guide']
 draft: false
 summary: 'RestTemplate에서 RestClient로 마이그레이션 해보기'
@@ -10,24 +10,314 @@ images: []
 
 ## Introduction
 
-Spring Boot 애플리케이션에서 외부 서비스에 HTTP 요청을 구현하기 위해 Spring이 제공하는 `RestTemplate`, `WebClient`와 같은 HTTP 클라이언트가 사용됩니다.
+Spring Boot 애플리케이션에서 외부 서비스에 HTTP 요청을 구현하기 위해 Spring이 제공하는 [RestTemplate](https://docs.spring.io/spring-framework/reference/integration/rest-clients.html#rest-resttemplate), [WebClient](https://docs.spring.io/spring-framework/reference/integration/rest-clients.html#rest-resttemplate)와 같은 HTTP 클라이언트를 사용합니다.
 
 `RestTemplate`은 Spring 3.0 버전부터 도입되었고, 템플릿 메소드 API를 사용하는 동기식 클라이언트로 전통적으로 많이 사용되어 왔습니다.
 
-`WebClient`는 Sporing 5.0 버전에 추가되었고, 모던 API 형식과 더불어 함수형 프로그래밍이 가능해 `RestTemplate` 대비 사용이 편리하고 직관적입니다.
+`WebClient`는 Sporing 5.0 버전에 추가되었으며, 모던 API 형식과 함수형 프로그래밍 지원으로 `RestTemplate`보다 사용이 편리하고 직관적입니다.
+그러나, `WebClient`를 사용하기 위해서는 `spring-boot-starter-webflux` 의존성이 필요합니다. [WebFlux](https://docs.spring.io/spring-framework/reference/web/webflux.html#webflux)는 비동기와 스트리밍 데이터 처리를 위한 리액티브 프로그래밍 프레임워크로,
+동기식 HTTP 구현을 위한 애플리케이션에서 불필요한 의존성을 추가하게 되는 단점이 있습니다.
 
-하지만, `WebClient`를 사용하기 위해서는 `WebFlux (spring-boot-starter-webflux)` 의존성이 필요합니다. `WebFlux`는 비동기나 스트리밍 데이터 처리와 같이 리액티브 프로그래밍을 위해 필요한 프레임워크이기 때문에,
-동기 방식의 HTTP 구현을 위한 애플리케이션에서 불필요한 의존성이 추가되는 단점이 존재합니다.
-
-이러한 상황에서 Spring Boot 3.2 (Spring 6.1) 부터 추가된 `RestClient`를 사용하면 기존 `MVC (spring-boot-starter-web)` 애플리케이션에서 별도의 의존성 추가 없이 `WebClient`와 유사한 방식으로 모던한 방식으로 동기식 HTTP 클라이언트를 구현할 수 있습니다.
+이러한 상황에서 Spring Boot 3.2 ([Spring 6.1](https://spring.io/blog/2023/07/13/new-in-spring-6-1-restclient)) 부터 추가된 `RestClient`를 사용하면 기존 `MVC (spring-boot-starter-web)` 애플리케이션에서 별도의 의존성 추가 없이 `WebClient`와 유사한 방식으로 모던한 동기식 HTTP 클라이언트를 구현할 수 있습니다.
 
 ---
 
 <TOCInline toc={props.toc} exclude="Introduction" />
 
-## RestClient 사용법
+## 1. RestClient 사용법
+
+### 1.1. RestClient 객체 생성
+
+`RestClient` 객체는 `create()` 메소드를 사용해 생성하거나 빌더 패턴을 사용해 URI, path variables, request header와 같은 옵션을 추가할 수 있습니다.
 
 ```java
 RestClient restClient = RestClient.create();
-
 ```
+
+```java
+RestClient restClient = RestClient.builder()
+  .baseUrl("https://example.com")
+  .defaultHeader("My-Header", "Foo")
+  .requestInterceptor(myCustomInterceptor)
+  .build();
+```
+
+### 1.2. HTTP 요청
+
+GET 요청은 기본적으로 아래 코드와 같이 사용할 수 있습니다.
+
+```java
+String result = restClient.get()
+  .uri("https://example.com")
+  .retrieve()
+  .body(String.class);
+```
+
+response body 이외에 response status code나 header 값이 필요한 경우 `ResponseEntity`로 반환 받을 수도 있습니다.
+
+```java
+ResponseEntity<String> result = restClient.get()
+    .uri("https://example.com")
+    .retrieve()
+    .toEntity(String.class);
+
+System.out.println("Response status: " + result.getStatusCode());
+System.out.println("Response headers: " + result.getHeaders());
+System.out.println("Contents: " + result.getBody());
+```
+
+`RestClient`는 Jackson 라이브러리를 사용하기 때문에 콘텐츠 타입을 `application/json`으로 지정해주면 JSON을 객체로 역직렬화하는 것도 가능합니다.
+
+```java
+Article article = restClient.get()
+    .uri("https://example.com/articles/{id}", id)
+    .contentType(APPLICATION_JSON)
+    .retrieve()
+    .body(Article.class);
+```
+
+POST 요청도 마찬가지로 request body에 객체를 담고, 콘텐츠 타입을 `applicaation/json`으로 지정해주면 Jackson을 통해 JSON으로 직렬화됩니다.
+아래 코드에서는 `toBodilessEntity()` 메소드를 사용해 POST 응답 페이로드를 무시하도록 했습니다.
+
+```java
+Article article = new Article(1, "How to use RestClient");
+ResponseEntity<Void> response = restClient.post()
+    .uri("https://example.com/articles")
+    .contentType(APPLICATION_JSON)
+    .body(article)
+    .retrieve()
+    .toBodilessEntity();
+```
+
+`retrieve()` 대신 `exchange()` 메소드를 통해 고급 기능을 구현할 수도 있습니다.
+API 서버에서 해당 데이터가 없을 때, 204 상태 코드를 반환해주는 경우, 아래 코드와 같이 커스텀 예외를 발생시킬 수 있습니다.
+`exchange()` 메소드는 HTTP request, response에 대해 액세스 할 수 있으며, 이 응답값은 raw 데이터이기 때문에 `ObjectMapper`를 통해 응답 데이터를 역직렬화했습니다.
+
+```java
+List<Aritlce> articles = restClient.get()
+    .uri("https://example.com/articles")
+    .exchange((request, response) -> {
+        if (response.getStatusCode().isSameCodeAs(HttpStatusCode.valueOf(204))) {
+            throw new ArticleNotFoundException();
+        } else if (response.getStatusCode().isSameCodeAs(HttpStatusCode.valueOf(200))) {
+            return objectMapper.readValue(response.getBody(), new TypeReference<>() {});
+        } else {
+            throw new InvalidArticleResponseException();
+        }
+    });
+```
+
+## 2. Error Handling
+
+### 2.1. RestTemplate
+
+`RestTemplate`을 사용할 때, 커스텀 에러 처리를 하기 위해서는 가장 단순하게 `try/catch`로 wrapping하거나 아래 코드와 같이
+`ResponseErrorHandler`를 구현해 `hasError`와 `handleError`를 오버라이드해서 사용하면 됩니다.
+
+```java
+@Component
+public class RestTemplateResponseErrorHandler implements ResponseErrorHandler {
+
+    @Override
+    public boolean hasError(ClientHttpResponse httpResponse) throws IOException {
+        return httpResponse.getStatusCode().is5xxServerError() ||
+            httpResponse.getStatusCode().is4xxClientError();
+    }
+
+    @Override
+    public void handleError(ClientHttpResponse httpResponse) throws IOException {
+        if (httpResponse.getStatusCode().is5xxServerError()) {
+            // Handle SERVER_ERROR
+            throw new HttpClientErrorException(httpResponse.getStatusCode());
+        } else if (httpResponse.getStatusCode().is4xxClientError()) {
+            // Handle CLIENT_ERROR
+            if (httpResponse.getStatusCode() == HttpStatus.NOT_FOUND) {
+                throw new NotFoundException();
+            }
+        }
+    }
+}
+```
+
+```java
+RestTemplate restTemplate = restTemplateBuilder
+    .errorHandler(new RestTemplateResponseErrorHandler())
+    .build();
+```
+
+### 2.2. RestClient
+
+`RestClient`도 기본적으로 HTTP 응답 코드가 4xx, 5xx 인 경우 `RestClientException`의 하위 클래스 예외를 발생시키는데,
+`onStatus`를 사용해서 직관적으로 커스텀 에러 처리가 가능합니다.
+
+```java
+String result = restClient.get()
+    .uri("https://example.com/this-url-does-not-exist")
+    .retrieve()
+    .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
+        throw new MyCustomRuntimeException(response.getStatusCode(), response.getHeaders())
+    })
+    .onStatus(HttpStatusCode::is5xxServerError, response -> {
+        throw new MyCustomRuntimeException(response.statusCode(), response.headers());
+    })
+    .body(String.class);
+```
+
+## 3. RestTemplate에서 RestClient로 마이그레이션 해보기
+
+[Naver OpenAPI](https://developers.naver.com/docs/common/openapiguide/)를 이용해 네이버 쇼핑에서 상품을 검색하는 예시 코드를 통해 `RestTemplate`으로 API를 호출하는 코드를 `RestClient`로 리팩토링 해보겠습니다.
+
+### 3.1. DTO Class
+
+```java:ItemResponse.java
+@Getter
+public class ItemResponse {
+
+    private String title;
+    private String thumbnailUrl;
+    private String purchaseUrl;
+    private int lowestPrice;
+}
+```
+
+```java:ItemsResponse.java
+@Getter
+public class ItemsResponse {
+
+    private List<ItemResponse> items;
+}
+```
+
+### 3.2. RestTemplate
+
+아래 코드가 `RestTemplate`으로 구현된 Naver OpenAPI 호출 코드입니다.
+서비스 클래스에서 `RestTemplateBuilder`를 생성자를 통해 주입 받고,
+`serchItems` 메소드를 통해 상품 검색 결과를 반환합니다.
+해당 메서드에서 크게 세 가지 부분을 살펴보면 `UriComponentsBuilder`를 통해 URI 생성, HTTP 헤더 추가, `restTemplate`으로 GET 요청을 수행하여 `ResponseEntity<ItemsResponse>`로 응답 결과를 받습니다.
+이 때, `exchange()` 내부에서 `ItemsResponse.class`를 통해 JSON을 `ItemsResponse` 객체로 역직렬화하게 됩니다.
+
+
+```java:RestTemplate(Legacy)
+package com.example.naver.service;
+
+import com.example.naver.controller.dto.response.ItemResponse;
+import com.example.naver.controller.dto.response.ItemsResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import java.net.URI;
+
+@Service
+public class NaverOpenApiService {
+
+    private final RestTemplate restTemplate;
+    private final String clientId;
+    private final String clientSecret;
+
+    public NaverOpenApiService(RestTemplateBuilder builder,
+                           @Value("${naver.client.id}") String clientId,
+                           @Value("${naver.client.secret}") String clientSecret) {
+        this.restTemplate = builder.build();
+        this.clientId = clientId;
+        this.clientSecret = clientSecret;
+    }
+
+    public ItemsResponse searchItems(String query) {
+        URI uri = UriComponentsBuilder
+                .fromUriString("https://openapi.naver.com")
+                .path("/v1/search/shop.json")
+                .queryParam("display", 15)
+                .queryParam("query", query)
+                .encode()
+                .build()
+                .toUri();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Naver-Client-Id", clientId);
+        headers.set("X-Naver-Client-Secret", clientSecret);
+
+        ResponseEntity<ItemsResponse> responseEntity = restTemplate.exchange(
+                uri,
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                ItemsResponse.class
+        );
+
+        return responseEntity.getBody();
+    }
+}
+```
+
+### 3.3. RestClient
+
+먼저, 서비스 클래스에서 `RestTemplate` 대신 `RestClient`를 생성자 주입 받습니다.
+이 때, builder를 통해 API 호출에 필요한 base url과 헤더를 미리 설정해줍니다.
+`serchItems` 메소드에서 주입 받은 `RestClient`를 사용해 API를 호출하게 됩니다.
+URI는 람다 표현식으로 생성한 후 GET 요청 시 동일하게 JSON을 `ItemsResponse` 객체로 역직렬화 한 값을 반환합니다.
+
+```java:RestClient(Refactoring)
+package com.example.shop.naver.service;
+
+import com.example.shop.naver.controller.dto.response.ItemResponse;
+import com.example.shop.naver.controller.dto.response.ItemsResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+
+@Service
+public class NaverOpenApiService {
+
+    private final RestClient restClient;
+
+    public NaverOpenApiService(@Value("${naver.client.id}") String clientId,
+                           @Value("${naver.client.secret}") String clientSecret) {
+        this.restClient = RestClient.builder()
+                .baseUrl("https://openapi.naver.com")
+                .defaultHeader("X-Naver-Client-Id", clientId)
+                .defaultHeader("X-Naver-Client-Secret", clientSecret)
+                .build();
+    }
+
+    public ItemsResponse searchItems(String query) {
+        return restClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/v1/search/shop.json")
+                        .queryParam("query", query)
+                        .queryParam("display", 15)
+                        .build())
+                .retrieve()
+                .body(ItemsResponse.class);
+        }
+    }
+}
+```
+
+## Conclusion
+
+`RestTemplate`에서 `RestClient`로 마이그레이션 해 본 결과 구현에 있어서 큰 차이는 존재하지 않습니다.
+그러나, 메소드 체이닝과 같은 모던한 구현 방식으로 코드 가독성 측면에서 더 직관적입니다. 에러 핸들링 측면에서도 핸들러 클래스를 상속 받아 오버라이딩하는 `RestTemplate`보다는 `RestClient`가 더 편리해 보입니다.
+
+`RestClient`는 `RestTemplate`의 인프라를 공유하기 때문에 message converters, request factories, interceptors와 같은 구성 요소들을 사용할 수 있으며, 기존 `RestTemplate`을 통해 `RestClient`를 생성할 수도 있습니다.
+
+```java
+RestTemplate restTemplate;
+RestClient restClient = RestClient.create(restTemplate);
+```
+
+개인적으로 두 방법 모두 동일한 기능을 제공하므로 기존 프로젝트의 `RestTemplate` 코드를 `RestClient`로 마이그레이션할 필요는 없어보입니다.
+
+그러나, 신규 프로젝트에서 동기 방식의 HTTP 구현이 필요한 경우 `RestClient`를 사용하면 코드 가독성이 좋아지고, 더 모던한 방식으로 구현할 수 있기 때문에 `RestClient`를 적극 사용하게 될 것 같습니다.
+
+## Reference
+
+- https://docs.spring.io/spring-framework/reference/integration/rest-clients.html#rest-restclient
+- https://www.baeldung.com/spring-boot-restclient
+- https://dzone.com/articles/spring-boot-32-replace-your-resttemplate-with-rest
+- https://www.baeldung.com/spring-rest-template-error-handling
