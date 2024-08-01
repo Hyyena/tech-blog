@@ -1,0 +1,235 @@
+---
+title: '@Transactional 동작 원리'
+date: '2024-08-01'
+lastmod: '2024-08-02'
+tags: ['Java', 'Spring', 'Spring Boot', 'JPA', 'Error']
+draft: false
+summary: '@Transactional 사용 시 Self-Invocation 해결하기'
+images: []
+---
+
+## Introduction
+
+최근 프로젝트에서 사용자 인증 후 토큰을 갱신하는 로직을 구현하던 중, 데이터베이스에 update 쿼리가 발생하지 않는 문제를 겪었습니다.
+
+JPA를 사용하여 별도의 `save` 메소드 호출 없이 더티 체킹(Dirty Checking)을 통해 엔티티 상태 변경을 자동으로 반영하도록 구현했지만, 트랜잭션이 제대로 적용되지 않아 토큰 갱신이 이루어지지 않는 문제가 발생했습니다.
+
+이러한 문제가 왜 발생했고, 어떻게 해결할 수 있는지 살펴보도록 하겠습니다.
+
+---
+
+<TOCInline toc={props.toc} exclude="Introduction" />
+
+## 1. 원인
+
+문제는 아래 코드에서처럼 동일한 클래스 내 다른 메소드에서 `@Transactional` 애노테이션이 붙은 메소드를 직접 호출했기 때문입니다.
+
+이게 뭐가 문제인가 싶을 수도 있습니다. 제가 로직을 구현할 때에도 애플리케이션을 실제 실행해보기 전까지는 몰랐습니다.
+
+더티 체킹을 사용하기 위해 업데이트 쿼리를 수행할 메소드에 `@Transactional` 애노테이션을 붙여 해당 메소드가 실행될 때, 트랜잭션이 동작하여 영속성 컨텍스트가 생성되고, JPA를 통해 조회 시 영속성 컨텍스트에 저장되어 트랜잭션이 끝날 때 자동으로 변경 사항을 데이터베이스에 반영하길 기대했습니다.
+
+하지만, 아래 코드가 실행될 때, `@Transactional`을 적용한 메소드 내부에서 엔티티 매니저를 통해 영속성 컨텍스트 존재 여부를 확인해보면 엔티티 매니저가 `user`를 캐싱하고 있지 않습니다.
+
+즉, 무슨 이유에서인지 트랜잭션이 적용되지 않아 영속성 컨텍스트가 생성되지 않고, 더티 체킹이 수행되지 않은겁니다.
+
+```java
+@RequiredArgsConstructor
+@Service
+public class TokenService {
+
+    private final UserRepository userRepository;
+
+    public void refreshToken(String token) {
+        // 새 토큰 생성
+        String newToken = TokenProvider.createToken();
+
+        // 같은 클래스 내에서 직접 호출
+        updateUserToken(1L, newToken);
+    }
+
+    @Transactional
+    public void updateUserToken(Long userId, String newToken) {
+        User user = userRepository.findById(userId);
+            .orElseThrow(() -> new UserNotFoundException("User not found"));
+
+        user.updateToken(newToken);
+    }
+}
+```
+
+## 2. Proxy 객체와 AOP
+
+Spring의 `@Transactional`은 AOP를 기반으로 동작합니다.
+
+Spring 프레임워크는 Spring 컨테이너가 실행될 때, `@Transactional`이 적용된 Bean을 프록시 객체로 생성합니다.
+
+아래 코드는 Spring 내부에서 생성되는 프록시 객체 예시입니다.
+
+```java
+public class TokenServiceProxy implements TokenService {
+
+    private final TokenService target;
+    private final PlatformTransactionManager transactionManager;
+
+    public TokenServiceProxy(TokenService target, PlatformTransactionManager transactionManager) {
+        this.target = target;
+        this.transactionManager = transactionManager;
+    }
+
+    @Override
+    public void refreshToken(String token) {
+        TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+        try {
+            target.refreshToken(token);
+            transactionManager.commit(status);
+            return result;
+        } catch (Exception ex) {
+            transactionManager.rollback(status);
+            throw ex;
+        }
+    }
+}
+```
+
+트랜잭션이 적용된 메소드가 호출될 때, 위 프록시 객체가 메소드를 가로채 트랜잭션 로직을 수행하게 됩니다.
+
+Spring은 `TransactionInterceptor`를 통해 메소드 호출을 가로채는데,
+실제 `TransactionInterceptor`의 내부를 살펴보면, Spring AOP의 `MethodInterceptor`를 구현하여 `invoke` 메소드를 통해 실제 메소드 호출을 가로채는 것을 볼 수 있습니다.
+
+```java
+public class TransactionInterceptor extends TransactionAspectSupport implements MethodInterceptor, Serializabl {
+
+    // ...
+
+    @Nullable
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        Class<?> targetClass = invocation.getThis() != null ? AopUtils.getTargetClass(invocation.getThis()) : null;
+        Method var10001 = invocation.getMethod();
+        Objects.requireNonNull(invocation);
+        return this.invokeWithinTransaction(var10001, targetClass, invocation::proceed);
+    }
+
+    // ...
+}
+```
+
+`invoke` 메소드가 반환하는 `invokeWithinTransaction`도 살펴보면, 트랜잭션 관리를 위한 `TransactionAspectSupport` 클래스 내부에서 트랜잭션을 관리하고 있는데,
+트랜잭션 인터셉터가 가로챈 메소드를 실행하기 전 트랜잭션을 시작하고 메소드를 실행한 뒤 트랜잭션을 종료하고 커밋하거나 롤백하는 것을 확인할 수 있습니다.
+
+```java
+public abstract class TransactionAspectSupport implements BeanFactoryAware, InitializingBean {
+
+    // ...
+
+    protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass, final InvocationCallback invocation)
+            throws Throwable {
+        // 트랜잭션 설정
+        TransactionAttributeSource tas = getTransactionAttributeSource();
+        TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+        PlatformTransactionManager tm = determineTransactionManager(txAttr);
+        String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+
+        // 트랜잭션 시작
+        TransactionInfo txInfo = createTransactionIfNecessary(tm, txAttr, joinpointIdentification);
+        Object retVal;
+        try {
+            // ...
+            // 메소드 실행
+            retVal = invocation.proceedWithInvocation();
+        } catch (Throwable ex) {
+            // ...
+            // 예외 처리 및 롤백
+            completeTransactionAfterThrowing(txInfo, ex);
+            throw ex;
+        } finally {
+            // ...
+            // 트랜잭션 종료
+            cleanupTransactionInfo(txInfo);
+        }
+        // ...
+        // 트랜잭션 커밋
+        commitTransactionAfterReturning(txInfo);
+        return retVal;
+    }
+}
+```
+
+> 요약하자면, `@Transactional` 애노테이션이 붙은 메소드는 Spring AOP를 통해 생성된 프록시 객체가 해당 Bean을 감싼 형태가 되고, 외부에서 메소드를 실행하려고 할 때, 프록시 객체가 호출을 가로채 트랜잭션을 적용하게 됩니다.
+
+## 3. 해결 방법
+
+다시 문제가 발생한 상황을 살펴보면, 위에서 살펴본 것과 같이 아래 코드도 프록시 객체가 생성되지만, 트랜잭션이 적용된 `refreshToken()` 메소드를 클래스 내부에서 직접적으로 호출하고 있기 때문에 프록시 객체를 거쳐서 트랜잭션이 적용된 채 메소드 실행이 이루어지지 않고, 메소드 그 자체만 실행되게 됩니다.
+
+```java
+@Service
+public class TokenService {
+
+    public void updateToken() {
+        // 자기 호출
+        refreshToken("token");
+    }
+
+    @Transactional
+    public void refreshToken(String token) {
+        // 트랜잭션 처리 로직
+    }
+}
+```
+
+> 따라서, 트랜잭션을 사용하기 위해서는 Spring AOP가 설정한 프록시 객체를 통해 메소드 실행이 이루어져야 한다는 것입니다.
+
+이것만 알면 해결 방법은 생각보다 너무 간단합니다.
+
+바로 아래 코드와 같이 트랜잭션이 필요한 메소드를 외부 클래스로 분리하여 사용하면 됩니다.
+
+```java
+@Service
+public class TokenService {
+
+    @Transactional
+    public void refreshToken(String tokenId) {
+        // 트랜잭션 처리 로직
+    }
+}
+
+@Service
+public class AuthService {
+
+    @Autowired
+    private TokenService tokenService;
+
+    public void updateToken(String tokenId) {
+        // 프록시 객체를 통해 호출됨
+        tokenService.refreshToken(tokenId);
+    }
+}
+```
+
+만약, 꼭 같은 클래스에 트랜잭션 메소드가 존재해야 한다면 AOP를 통해 프록시 객체를 직접 주입 받아 사용할 수도 있습니다.
+(굳이 이렇게까지 사용할 필요가 있을까 싶긴 합니다.)
+
+```java
+@Service
+public class TokenService {
+
+    @Autowired
+    private ApplicationContext context;
+
+    public void updateToken() {
+        TokenService proxy = context.getBean(TokenService.class);
+        // 프록시 객체를 통해 호출됨
+        proxy.refreshToken("token");
+    }
+
+    @Transactional
+    public void refreshToken(String token) {
+        // 트랜잭션 처리 로직
+    }
+}
+```
+
+## Conclusion
+
+위 해결 방법과 같이 클래스 분리로 프록시 객체를 통한 트랜잭션 적용으로 더티 체킹은 정상적으로 수행됐습니다.
+애노테이션으로 간편하게 사용하고 있어서 내부적으로 AOP 기반의 프록시 객체를 생성해서 트랜잭션과 같은 부가 기능을 수행하는지 몰랐는데,
+이를 통해 프록시 패턴과 트랜잭션 동작 원리에 대해 알게됐습니다.
