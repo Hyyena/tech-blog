@@ -80,7 +80,7 @@ public class TokenServiceProxy implements TokenService {
     public void refreshToken(String token) {
         TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
         try {
-            target.refreshToken(token);
+            target.updateUserToken(token);
             transactionManager.commit(status);
             return result;
         } catch (Exception ex) {
@@ -164,7 +164,7 @@ public abstract class TransactionAspectSupport implements BeanFactoryAware, Init
 @Service
 public class TokenService {
 
-    public void updateToken() {
+    public void updateUserToken() {
         // 자기 호출
         refreshToken("token");
     }
@@ -187,7 +187,7 @@ public class TokenService {
 public class TokenService {
 
     @Transactional
-    public void refreshToken(String tokenId) {
+    public void updateUserToken(String tokenId) {
         // 트랜잭션 처리 로직
     }
 }
@@ -198,9 +198,9 @@ public class AuthService {
     @Autowired
     private TokenService tokenService;
 
-    public void updateToken(String tokenId) {
+    public void refreshToken(String tokenId) {
         // 프록시 객체를 통해 호출됨
-        tokenService.refreshToken(tokenId);
+        tokenService.updateUserToken(tokenId);
     }
 }
 ```
@@ -215,14 +215,14 @@ public class TokenService {
     @Autowired
     private ApplicationContext context;
 
-    public void updateToken() {
+    public void refreshToken() {
         TokenService proxy = context.getBean(TokenService.class);
         // 프록시 객체를 통해 호출됨
-        proxy.refreshToken("token");
+        proxy.updateUserToken("token");
     }
 
     @Transactional
-    public void refreshToken(String token) {
+    public void updateUserToken(String token) {
         // 트랜잭션 처리 로직
     }
 }
