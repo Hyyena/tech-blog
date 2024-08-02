@@ -31,12 +31,12 @@ public class TokenService {
 
     private final UserRepository userRepository;
 
-    public void refreshToken(String token) {
+    public void refreshToken(Long userId, String token) {
         // 새 토큰 생성
         String newToken = TokenProvider.createToken();
 
         // 같은 클래스 내에서 직접 호출
-        updateUserToken(1L, newToken);
+        updateUserToken(userId, newToken);
     }
 
     @Transactional
@@ -79,10 +79,10 @@ public class TokenServiceProxy implements TokenService {
     }
 
     @Override
-    public void refreshToken(String token) {
+    public void refreshToken(Long userId, String token) {
         TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
         try {
-            target.updateUserToken(token);
+            target.updateUserToken(userId, token);
             transactionManager.commit(status);
             return result;
         } catch (Exception ex) {
@@ -167,12 +167,13 @@ public abstract class TransactionAspectSupport implements BeanFactoryAware, Init
 public class TokenService {
 
     public void refreshToken() {
+        // ...
         // 자기 호출
-        updateUserToken("token");
+        updateUserToken(1L, "newToken");
     }
 
     @Transactional
-    public void updateUserToken(String token) {
+    public void updateUserToken(Long userId, String newToken) {
         // 트랜잭션 처리 로직
     }
 }
@@ -189,7 +190,7 @@ public class TokenService {
 public class TokenService {
 
     @Transactional
-    public void updateUserToken(String tokenId) {
+    public void updateUserToken(Long userId, String newToken) {
         // 트랜잭션 처리 로직
     }
 }
@@ -200,9 +201,10 @@ public class AuthService {
     @Autowired
     private TokenService tokenService;
 
-    public void refreshToken(String tokenId) {
+    public void refreshToken(Long userId, String token) {
+        // ...
         // 프록시 객체를 통해 호출됨
-        tokenService.updateUserToken(tokenId);
+        tokenService.updateUserToken(userId, "newToken");
     }
 }
 ```
@@ -220,11 +222,11 @@ public class TokenService {
     public void refreshToken() {
         TokenService proxy = context.getBean(TokenService.class);
         // 프록시 객체를 통해 호출됨
-        proxy.updateUserToken("token");
+        proxy.updateUserToken(1L, "newToken");
     }
 
     @Transactional
-    public void updateUserToken(String token) {
+    public void updateUserToken(Long userId, String newToken) {
         // 트랜잭션 처리 로직
     }
 }
